@@ -58,14 +58,14 @@ char *get_meaning(token_type);
 int get_next_char();
 struct token *get_next_token();
 
-// Lexer - Operations for token data structure
+// Lexer / Operations for token data structure
 
 struct token *create_token();
 void push_to_lexeme(struct token *, int);
 int pop_from_lexeme(struct token *);
 void flush_lexeme(struct token *);
 
-// Lexer - Evaluators
+// Lexer / Evaluators
 
 int eval_bin(const char *);
 int eval_oct(const char *);
@@ -76,7 +76,7 @@ int get_value(int);
 char *eval_sqstr(char *);
 char *eval_dqstr(char *);
 
-// Lexer - Recognizers 
+// Lexer / Recognizers 
 
 bool is_terminal(const char *, const char *);
 bool is_id(const char *);
@@ -88,7 +88,7 @@ bool is_hex(const char *);
 bool is_sqstr(const char *);
 bool is_dqstr(const char *);
 
-// Lexer - Atom recognizers
+// Lexer / Atom recognizers
 
 bool is_bindigit(int);
 bool is_octdigit(int);
@@ -98,7 +98,7 @@ bool is_digit(int);
 bool is_letter(int);
 bool is_visible_ascii_character(int);
 
-// Lexer - Misc recognizers
+// Lexer / Misc recognizers
 
 bool is_eos(int);
 bool is_eol(int);
