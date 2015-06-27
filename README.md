@@ -13,7 +13,7 @@ Created by eurekasfray.
 <table>
   <tr><td>Design</td><td>Ongoing</td></tr>
   <tr><td>Lexer</td><td>Completed</td></tr>
-  <tr><td>Tree builder</td><td>Pending</td></tr>
+  <tr><td>Tree builder</td><td>Doing</td></tr>
   <tr><td>Parser</td><td>Pending</td></tr>
   <tr><td>Virtual machine</td><td>Pending</td></tr>
 </table>
