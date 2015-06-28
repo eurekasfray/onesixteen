@@ -10,6 +10,75 @@
 #include <stdbool.h>
 
 //==============================================================================
+// ...
+//==============================================================================
+
+#define ENUM int // type for anonymous enums
+#define uint8 unsigned char 
+#define uint16 unsigned short int
+
+typedef uint8 byte;
+typedef uint16 word;
+
+//==============================================================================
+// AST
+//==============================================================================
+
+// Line types
+
+enum {
+    LT_UNDEFINED,              // A line whose type is not yet defined
+    LT_EMPTY,                  // An empty line
+    LT_LABEL,                  // A line with only a label
+    LT_LABEL_MNEMONIC,         // A line with a label and mnemonic
+    LT_LABEL_MNEMONIC_OPERAND, // A line with a label, a mnemonic, and one or more operands
+    LT_MNEMONIC,               // A line with only a mnemonic
+    LT_MNEMONIC_OPERAND        // A line with a mnemonic, and one or more operands
+};
+
+// Node types
+
+enum {
+    NT_LINE,
+    NT_TOKEN,
+    NT_EOF
+};
+
+// Line node
+
+struct line_node {
+    ENUM node_type;
+    ENUM line_type;
+    unsigned int lineno;
+};
+
+// Token node
+
+struct token_node {
+    ENUM node_type;
+    struct token *token;
+    unsigned int colno;
+};
+
+// EOF node
+
+struct eof_node {
+    ENUM node_type;
+};
+
+//==============================================================================
+// Node
+//==============================================================================
+
+// Node
+
+struct node {
+    void *data;
+    struct node *sibling;
+    struct node *subtree;
+};
+
+//==============================================================================
 // Token
 //==============================================================================
 
@@ -53,6 +122,17 @@ void display_usage(const char *);
 void init();
 char *get_meaning(token_type);
 
+// Tree builder
+
+struct node *get_ast();
+struct node *ast_line(struct node *, ENUM, unsigned int);
+struct node *ast_linesibl(struct node *, ENUM, unsigned int);
+struct node *ast_token(struct node *, struct token *, unsigned int);
+struct node *ast_tokensibl(struct node *, struct token *, unsigned int);
+struct node *ast_eof(struct node *);
+struct node *ast_eofsibl(struct node *);
+void dump_ast(struct node *);
+
 // Lexer
 
 int get_next_char();
@@ -60,7 +140,7 @@ struct token *get_next_token();
 
 // Lexer / Operations for token data structure
 
-struct token *create_token();
+struct token *new_token();
 void push_to_lexeme(struct token *, int);
 int pop_from_lexeme(struct token *);
 void flush_lexeme(struct token *);
@@ -121,6 +201,17 @@ int tolowercase(int);
 char *substr(const char *, size_t);
 char *dupstr(const char *);
 
+// Node operations
+
+struct node *new_node();
+
+// Tree operations
+
+struct node *new_tree();
+struct node *add_sibling(struct node *);
+struct node *add_subtree(struct node *);
+bool tree_empty(struct node *);
+
 // Error-trapped functions
 
 FILE *efopen(const char *, const char *);
@@ -132,6 +223,7 @@ void *emalloc(size_t);
 
 FILE *src; // source file
 int input; // stores character retrieved from source file
+word lc;   // location counter
 
 //==============================================================================
 // Error output
@@ -199,6 +291,9 @@ void display_usage(const char *self)
 
 void init()
 {
+    // Init the location counter
+    lc = 0;
+
     // Get first character for the lexer to start with
     input = get_next_char();
 }
@@ -227,11 +322,11 @@ char *get_meaning(token_type type)
             break;
             
         case t_squote:
-            s = dupstr("single quotation mark");
+            s = dupstr("string");
             break;
             
         case t_dquote:
-            s = dupstr("double quotation mark");
+            s = dupstr("string");
             break;
             
         case t_eol:
@@ -249,8 +344,235 @@ char *get_meaning(token_type type)
 }
 
 //=============================================================================
-// Lexer
+// Tree builder
 //=============================================================================
+
+// Build tree
+
+struct node *get_ast()
+{
+    // The tree builder builds an internal representation of the source file
+    // from a stream of tokens fed to it by the lexer. The source is represented
+    // internally as a tree. Each line of the source becomes a node. And for
+    // each token found on a line, the tree builder adds it to the tree as
+    // a child of the line on which it was found.
+    //  
+    // The tree is organized into three levels: root, lines, and tokens.
+    // Naturally, the root node lives on the first level. All lines live beneath
+    // the root node, on the second level, as children of the root node. Lastly,
+    // tokens live on the third level, as children of their belonging lines.
+    //
+    // The tree builder uses pointers to point to each level of the tree:
+    // A pointer that points to the root node, one that points to the line nodes,
+    // and lastly one that points to the token nodes. The root-node pointer is
+    // mostly ignored by the tree builder. However, the pointers to the line
+    // nodes and token nodes are used generally by the tree builder. The pointer
+    // to the line node is used to point to the last line node accessed by the
+    // tree builder. The same applies for the token-node pointer, where it is
+    // used to point to the last token node accessed by the tree builder.
+    // The purpose for their use is simple: The tree builder needs to know where
+    // to add the next line node or next token node. So, these pointers always
+    // point to the last added line and token, respectively.
+    //
+    // Handling first token. If EOF is the first token, create an EOF node on the
+    // line level. Encountering an EOF as the first token means that the source
+    // file is empty and contains no source code. If EOL is the first token,
+    // create an LINE node on the line level. Encountering an EOL as the first
+    // token means that first line of the source code contains no source code;
+    // regardless, add it to the tree. However, if neither an EOF or EOL token
+    // is encountered, add the token to a new line. Create a LINE node and
+    // attach the token to it.
+    //
+    // Handling remaining tokens. All tokens are processed until an EOF token is
+    // encountered, because it indicates that we have reached the end of the
+    // source file. The stream of tokens from the lexer is consumed one
+    // token at a time. Each token is checked and added to the tree
+    // accordingly: If the token is an EOL token, then it is added as a
+    // LINE. But for any other token, we simply append them as tokens to
+    // the line. [Rewrite for coherency.]
+
+    struct token *token; // stores retrieved token
+    struct node *rootn;  // always points to the root node
+    struct node *linen;  // points only to line nodes
+    struct node *tokenn; // points only to token nodes
+    
+    rootn = new_tree();
+    
+    // Handle first token
+    token = get_next_token();
+    if (token->type == t_eof) {
+        linen = ast_eof(rootn);
+    }
+    else if (token->type == t_eol) {
+        linen = ast_line(rootn, LT_UNDEFINED, 0);
+    }
+    else {
+        linen = ast_line(rootn, LT_UNDEFINED, 0);
+        tokenn = ast_token(linen, token, 0);
+    }
+    
+    // Handle remaining tokens
+    token = get_next_token();
+    while (token->type != t_eof) {
+        if (token->type == t_eol) {
+            // We encountered a new line... create a line node
+            linen = ast_linesibl(linen, LT_UNDEFINED, 0);
+        }
+        else {
+            // Does this line node have any token children? If not, create
+            // a new token child. However if it already has a child or children,
+            // create the new token as a sibling.
+            if (linen->subtree == NULL) { 
+                tokenn = ast_token(linen, token, 0);
+            }
+            else { 
+                tokenn = ast_tokensibl(tokenn, token, 0);
+            }
+        }
+        token = get_next_token();
+    }
+    linen = ast_eofsibl(linen);
+    
+    return rootn;
+}
+
+// Create new line node
+
+struct node *ast_line(struct node *parent, ENUM line_type, unsigned int lineno)
+{
+    struct line_node *p;
+    struct node *n;
+    
+    p = emalloc(sizeof(struct line_node));
+    p->node_type = NT_LINE;
+    p->line_type = line_type;
+    p->lineno = lineno;
+    n = add_subtree(parent);
+    n->data = p;
+    return n;
+}
+
+// Create new sibling line node
+
+struct node *ast_linesibl(struct node *sister, ENUM line_type, unsigned int lineno)
+{
+    struct line_node *p;
+    struct node *n;
+    
+    p = emalloc(sizeof(struct line_node));
+    p->node_type = NT_LINE;
+    p->line_type = line_type;
+    p->lineno = lineno;
+    n = add_sibling(sister);
+    n->data = p;
+    return n;
+}
+
+// Create new token node
+
+struct node *ast_token(struct node *parent, struct token *token, unsigned int colno)
+{
+    struct token_node *p;
+    struct node *n;
+    
+    p = emalloc(sizeof(struct token_node));
+    p->node_type = NT_TOKEN;
+    p->token = token;
+    p->colno;
+    n = add_subtree(parent);
+    n->data = p;
+    return n;
+}
+
+// Create new sibling token node
+
+struct node *ast_tokensibl(struct node *sister, struct token *token, unsigned int colno)
+{
+    struct token_node *p;
+    struct node *n;
+    
+    p = emalloc(sizeof(struct token_node));
+    p->node_type = NT_TOKEN;
+    p->token = token;
+    p->colno;
+    n = add_sibling(sister);
+    n->data = p;
+    return n;
+}
+
+// Create new EOF node
+
+struct node *ast_eof(struct node *parent)
+{
+    struct eof_node *p;
+    struct node *n;
+    
+    p = emalloc(sizeof(struct eof_node));
+    p->node_type = NT_EOF;
+    n = add_subtree(parent);
+    n->data = p;
+    return n;
+}
+
+// Create new EOF node as a sibling
+
+struct node *ast_eofsibl(struct node *sister)
+{
+    struct eof_node *p;
+    struct node *n;
+    
+    p = emalloc(sizeof(struct eof_node));
+    p->node_type = NT_EOF;
+    n = add_sibling(sister);
+    n->data = p;
+    return n;
+}
+
+// Dump print AST (debug only)
+
+void dump_ast(struct node *root)
+{
+    // TODO: Rewrite this code elegantly
+
+    struct node *lp; // current line node
+    struct node *tp; // current token node
+    struct line_node *ln;
+    struct token_node *tn;
+    int line; // line counter
+    
+    line = 1;
+    lp = root->subtree; // get first line
+    
+    ln = lp->data;
+    while (lp->sibling != NULL) {
+        printf("Line %d\n\n", line);
+        tp = lp->subtree; // get line subtree
+        if (tp == NULL) {
+            printf("  Empty\n\n");
+        }
+        else {
+            tn = tp->data;
+            while (tp->sibling != NULL) {
+                printf("  Token\n");
+                //printf("%sLexeme: %s\n", pad, tn->token->lexeme);
+                printf("  Type: %s\n\n", get_meaning(tn->token->type));
+                tp = tp->sibling;
+                tn = tp->data;
+            }
+            printf("  Token\n");
+            //printf("  Lexeme: %s\n", tn->token->lexeme);
+            printf("  Type: %s\n\n", get_meaning(tn->token->type));
+        }
+        line++;
+        lp = lp->sibling;
+        //ln = lp->data;
+    }
+    printf("EOF\n\n");
+}
+
+//=============================================================================
+// Lexer
+//============================================================================
 
 // Get next character from source file
 
@@ -313,7 +635,7 @@ struct token *get_next_token()
     -------------   -----------------   ----------  -----------------------------
     */
     
-    typedef enum state {
+    enum {
         S0,     // State 0      ...
         S1,     // State 1      ...
         S2,     // State 2      ...
@@ -325,14 +647,14 @@ struct token *get_next_token()
         S6_1,   // State 6.1    ...
         S7,     // State 7      ...
         S8      // State 8      ...
-    } state;
+    };
     
-    state current_state; // current state
-    state next_state;    // next state
+    ENUM current_state;  // current state
+    ENUM next_state;     // next state
     bool done;           // used to indicate end of tokenization process
     struct token *token; // token
 
-    token = create_token();
+    token = new_token();
     flush_lexeme(token);
     
     done = false;
@@ -555,7 +877,7 @@ struct token *get_next_token()
 
 // Create new token
 
-struct token *create_token()
+struct token *new_token()
 {
     struct token *p;
     p = emalloc(sizeof(struct token));
@@ -611,7 +933,6 @@ int eval_bin(const char *s)
     char *p;
     p = dupstr(s);
     p[strlen(p)-1] = '\0';
-    printf(" %s ",p);
     return eval(p,2);
 }
 
@@ -622,7 +943,6 @@ int eval_oct(const char *s)
     char *p;
     p = dupstr(s);
     p[strlen(p)-1] = '\0';
-    printf(" %s ",p);
     return eval(p,8);
 }
 
@@ -639,11 +959,9 @@ int eval_dec(const char *s)
     p = dupstr(s);
     if (tolowercase(s[strlen(s)-1]) == 'd') {
         p[strlen(p)-1] = '\0';
-        printf(" %s ",p);
         return eval(p,10);
     }
     else {
-        printf(" %s ",p);
         return eval(p,10);
     }
 }
@@ -655,7 +973,6 @@ int eval_hex(const char *s)
     char *p;
     p = dupstr(s);
     p[strlen(p)-1] = '\0';
-    printf(" %s ",p);
     return eval(p,16);
 }
 
@@ -710,7 +1027,8 @@ int get_value(int c)
 
 char *eval_sqstr(char *s)
 {
-    // This assembler features simple string syntax. So, only remove the quotation marks.
+    // This assembler features simple string syntax. So, only remove the
+    // quotation marks.
 
     char *p;
     p = substr(s+1,strlen(s)-2);
@@ -808,7 +1126,7 @@ bool is_id(const char *s)
     return validity;
 }
 
-// Recognize any integer representation
+// Recognize any integer numeral
 
 bool is_int(const char *s)
 {
@@ -1576,6 +1894,98 @@ char *dupstr(const char *s)
     p = emalloc(strlen(s)+1);
     strcpy(p,s);
     return p;
+}
+
+//=============================================================================
+// Node operations
+//=============================================================================
+
+// Create new node
+
+struct node *new_node()
+{
+    struct node *p;
+    p = emalloc(sizeof(struct node));
+    p->data = NULL;
+    p->sibling = NULL;
+    p->subtree = NULL;
+    return p;
+}
+
+//=============================================================================
+// Tree operations
+//=============================================================================
+
+// Create tree
+
+struct node *new_tree()
+{
+    struct node *p;
+    p = new_node();
+    return p;
+}
+
+// Add sibling
+
+struct node *add_sibling(struct node *target)
+{
+    // This operation adds a sibling to the specified target node.
+    // The operation first checks for two things in order to determine
+    // what action to take. It checks to see whether the target node
+    // is terminal or not. If the target node is terminal, then it
+    // simply appends the new sibling node to the target. However,
+    // if the target already has a sibling attached to it, then the
+    // operation must insert the new sibling between the target
+    // and its existing sibling node.
+
+    struct node *old;
+    struct node *node;
+    
+    if (target->sibling == NULL) {
+        node = new_node();
+        target->sibling = node;
+        return node;
+    }
+    else {
+        old = target->sibling;
+        node = new_node();
+        target->sibling = node;
+        node->sibling = old;
+        return node;
+    }
+}
+
+// Add subtree
+
+struct node *add_subtree(struct node *target)
+{
+    // This operation adds a sibling to the specified target node
+    
+    struct node *old;
+    struct node *node;
+
+    if (target->subtree == NULL) {
+        node = new_node();
+        target->subtree = node;
+        return node;
+    }
+    else {
+        old = target->subtree;
+        node = new_node();
+        target->subtree = node;
+        node->subtree = old;
+        return node;
+    }
+}
+
+// Is tree empty?
+
+bool tree_empty(struct node *root)
+{
+    if (root->subtree == NULL) {
+        return true;
+    }
+    return false;
 }
 
 //=============================================================================
